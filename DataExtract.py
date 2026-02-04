@@ -11,21 +11,35 @@ Version: 2.0 (Complete image processing pipeline)
 import streamlit as st
 import pandas as pd
 import re
-import win32com.client
-import pythoncom
 import time
 from pathlib import Path
 from io import BytesIO
 import tempfile
 import os
-import threading
-from queue import Queue
-import subprocess
+import platform
 import requests
 import cv2
 import numpy as np
 from PIL import Image
 import random
+
+# Platform detection
+IS_WINDOWS = platform.system() == 'Windows'
+
+# Conditional imports
+if IS_WINDOWS:
+    try:
+        import win32com.client
+        import pythoncom
+        import subprocess
+        from queue import Queue
+        import threading
+        WINDOWS_SUPPORT = True
+    except ImportError:
+        WINDOWS_SUPPORT = False
+        st.warning("⚠️ Windows-specific features (VBA macros) are not available. Running in limited mode.")
+else:
+    WINDOWS_SUPPORT = False
 
 # ======================
 # PAGE CONFIGURATION
@@ -601,220 +615,221 @@ def process_Extractd_data(url_df, map_df, progress_bar, status_text):
     return pd.DataFrame(results)
 
 # ======================
-# EXCEL OPERATIONS (THREADED)
+# EXCEL OPERATIONS (THREADED) - Windows Only
 # ======================
-def excel_Extractr_worker(file_path, result_queue):
-    """Worker function for Web extracting"""
-    try:
-        pythoncom.CoInitialize()
-        excel = None
-        workbook = None
-        
+if WINDOWS_SUPPORT:
+    def excel_Extractr_worker(file_path, result_queue):
+        """Worker function for Web extracting"""
         try:
-            result_queue.put(("status", "Starting Excel..."))
-            excel = win32com.client.Dispatch("Excel.Application")
-            
-            excel.Visible = False
-            excel.DisplayAlerts = False
-            excel.ScreenUpdating = False
-            excel.Interactive = False
-            excel.EnableEvents = False
-            excel.AskToUpdateLinks = False
-            excel.AlertBeforeOverwriting = False
-            
-            result_queue.put(("progress", 0.1))
-            result_queue.put(("status", "Opening workbook..."))
-            
-            # Convert to absolute path
-            abs_path = os.path.abspath(file_path)
-            
-            workbook = excel.Workbooks.Open(
-                abs_path,
-                UpdateLinks=0,
-                ReadOnly=False,
-                Password='',
-                WriteResPassword='',
-                IgnoreReadOnlyRecommended=True,
-                Notify=False,
-                AddToMru=False,
-                Local=False,
-                CorruptLoad=0
-            )
-            
-            if workbook is None:
-                result_queue.put(("error", "Failed to open workbook"))
-                return
-            
-            result_queue.put(("progress", 0.2))
-            result_queue.put(("status", "Injecting VBA Extractr..."))
-            
-            # Access VBA project
-            try:
-                vb_project = workbook.VBProject
-            except Exception as e:
-                result_queue.put(("error", f"Cannot access VBA project. Please enable 'Trust access to VBA project object model' in Excel: {str(e)}"))
-                return
-            
-            for component in vb_project.VBComponents:
-                if component.Name == "ExtractrModule":
-                    vb_project.VBComponents.Remove(component)
-            
-            module = vb_project.VBComponents.Add(1)
-            module.Name = "ExtractrModule"
-            module.CodeModule.AddFromString(VBA_ExtractR_CODE)
-            
-            result_queue.put(("progress", 0.3))
-            result_queue.put(("status", "Running web Extractr..."))
-            
-            excel.Run("ExtractrModule.ExtractURLsFromColumnA_Auto")
-            time.sleep(2)
-            
-            result_queue.put(("progress", 0.8))
-            result_queue.put(("status", "Reading results..."))
-            
-            ws = workbook.ActiveSheet
-            result = ws.Range("Z1").Value
-            
-            if result and result.startswith("SUCCESS"):
-                parts = result.split("|")
-                ws.Range("Z1").Value = ""
-                workbook.Save()
-                
-                used_range = ws.UsedRange
-                data = used_range.Value
-                df = pd.DataFrame(data[1:], columns=data[0])
-                
-                result_queue.put(("progress", 1.0))
-                result_queue.put(("success", df, f"Success: {parts[1]} URLs, Failed: {parts[2]} URLs"))
-            else:
-                result_queue.put(("error", f"Extracting failed: {result}"))
-                
-        except Exception as e:
-            result_queue.put(("error", f"Error: {str(e)}"))
-            
-        finally:
-            if workbook:
-                try:
-                    workbook.Close(SaveChanges=True)
-                except:
-                    pass
-            if excel:
-                try:
-                    excel.Quit()
-                except:
-                    pass
-    finally:
-        pythoncom.CoUninitialize()
-
-def excel_image_insert_worker(file_path, result_queue):
-    """Worker function for inserting images"""
-    try:
-        pythoncom.CoInitialize()
-        excel = None
-        workbook = None
-        
-        try:
-            result_queue.put(("status", "Opening workbook for image insertion..."))
-            excel = win32com.client.Dispatch("Excel.Application")
-            
-            excel.Visible = False
-            excel.DisplayAlerts = False
-            excel.ScreenUpdating = False
-            excel.Interactive = False
-            excel.EnableEvents = False
-            
-            abs_path = os.path.abspath(file_path)
-            
-            workbook = excel.Workbooks.Open(
-                abs_path,
-                UpdateLinks=0,
-                ReadOnly=False,
-                Password='',
-                IgnoreReadOnlyRecommended=True,
-                Notify=False,
-                AddToMru=False
-            )
-            
-            if workbook is None:
-                result_queue.put(("error", "Failed to open workbook"))
-                return
-            
-            result_queue.put(("status", "Injecting image insertion macro..."))
+            pythoncom.CoInitialize()
+            excel = None
+            workbook = None
             
             try:
-                vb_project = workbook.VBProject
-            except Exception as e:
-                result_queue.put(("error", f"Cannot access VBA project: {str(e)}"))
-                return
-            
-            for component in vb_project.VBComponents:
-                if component.Name == "ImageModule":
-                    vb_project.VBComponents.Remove(component)
-            
-            module = vb_project.VBComponents.Add(1)
-            module.Name = "ImageModule"
-            module.CodeModule.AddFromString(VBA_IMAGE_INSERT_CODE)
-            
-            result_queue.put(("status", "Inserting images into Excel..."))
-            
-            excel.Run("ImageModule.InsertImagesFromPaths_Auto")
-            time.sleep(2)
-            
-            ws = workbook.ActiveSheet
-            result = ws.Range("Z2").Value
-            
-            if result and result.startswith("SUCCESS"):
-                parts = result.split("|")
-                ws.Range("Z2").Value = ""
-                workbook.Save()
-                result_queue.put(("success", f"Inserted {parts[1]} images, {parts[2]} missing"))
-            else:
-                result_queue.put(("error", f"Image insertion failed: {result}"))
+                result_queue.put(("status", "Starting Excel..."))
+                excel = win32com.client.Dispatch("Excel.Application")
                 
-        except Exception as e:
-            result_queue.put(("error", f"Error: {str(e)}"))
-            
-        finally:
-            if workbook:
+                excel.Visible = False
+                excel.DisplayAlerts = False
+                excel.ScreenUpdating = False
+                excel.Interactive = False
+                excel.EnableEvents = False
+                excel.AskToUpdateLinks = False
+                excel.AlertBeforeOverwriting = False
+                
+                result_queue.put(("progress", 0.1))
+                result_queue.put(("status", "Opening workbook..."))
+                
+                # Convert to absolute path
+                abs_path = os.path.abspath(file_path)
+                
+                workbook = excel.Workbooks.Open(
+                    abs_path,
+                    UpdateLinks=0,
+                    ReadOnly=False,
+                    Password='',
+                    WriteResPassword='',
+                    IgnoreReadOnlyRecommended=True,
+                    Notify=False,
+                    AddToMru=False,
+                    Local=False,
+                    CorruptLoad=0
+                )
+                
+                if workbook is None:
+                    result_queue.put(("error", "Failed to open workbook"))
+                    return
+                
+                result_queue.put(("progress", 0.2))
+                result_queue.put(("status", "Injecting VBA Extractr..."))
+                
+                # Access VBA project
                 try:
-                    workbook.Close(SaveChanges=True)
-                except:
-                    pass
-            if excel:
-                try:
-                    excel.Quit()
-                except:
-                    pass
-    finally:
-        pythoncom.CoUninitialize()
-
-def run_threaded_operation(worker_func, file_path, progress_bar, status_text):
-    """Run Excel operation in thread"""
-    result_queue = Queue()
-    worker_thread = threading.Thread(target=worker_func, args=(file_path, result_queue))
-    worker_thread.start()
-    
-    while worker_thread.is_alive() or not result_queue.empty():
-        try:
-            msg = result_queue.get(timeout=0.1)
-            msg_type = msg[0]
-            
-            if msg_type == "status":
-                status_text.text(msg[1])
-            elif msg_type == "progress":
-                progress_bar.progress(msg[1])
-            elif msg_type == "success":
-                if len(msg) > 2:
-                    return msg[1], True, msg[2]
+                    vb_project = workbook.VBProject
+                except Exception as e:
+                    result_queue.put(("error", f"Cannot access VBA project. Please enable 'Trust access to VBA project object model' in Excel: {str(e)}"))
+                    return
+                
+                for component in vb_project.VBComponents:
+                    if component.Name == "ExtractrModule":
+                        vb_project.VBComponents.Remove(component)
+                
+                module = vb_project.VBComponents.Add(1)
+                module.Name = "ExtractrModule"
+                module.CodeModule.AddFromString(VBA_ExtractR_CODE)
+                
+                result_queue.put(("progress", 0.3))
+                result_queue.put(("status", "Running web Extractr..."))
+                
+                excel.Run("ExtractrModule.ExtractURLsFromColumnA_Auto")
+                time.sleep(2)
+                
+                result_queue.put(("progress", 0.8))
+                result_queue.put(("status", "Reading results..."))
+                
+                ws = workbook.ActiveSheet
+                result = ws.Range("Z1").Value
+                
+                if result and result.startswith("SUCCESS"):
+                    parts = result.split("|")
+                    ws.Range("Z1").Value = ""
+                    workbook.Save()
+                    
+                    used_range = ws.UsedRange
+                    data = used_range.Value
+                    df = pd.DataFrame(data[1:], columns=data[0])
+                    
+                    result_queue.put(("progress", 1.0))
+                    result_queue.put(("success", df, f"Success: {parts[1]} URLs, Failed: {parts[2]} URLs"))
                 else:
-                    return None, True, msg[1]
-            elif msg_type == "error":
-                return None, False, msg[1]
-        except:
-            continue
-    
-    worker_thread.join()
-    return None, False, "Unknown error"
+                    result_queue.put(("error", f"Extracting failed: {result}"))
+                    
+            except Exception as e:
+                result_queue.put(("error", f"Error: {str(e)}"))
+                
+            finally:
+                if workbook:
+                    try:
+                        workbook.Close(SaveChanges=True)
+                    except:
+                        pass
+                if excel:
+                    try:
+                        excel.Quit()
+                    except:
+                        pass
+        finally:
+            pythoncom.CoUninitialize()
+
+    def excel_image_insert_worker(file_path, result_queue):
+        """Worker function for inserting images"""
+        try:
+            pythoncom.CoInitialize()
+            excel = None
+            workbook = None
+            
+            try:
+                result_queue.put(("status", "Opening workbook for image insertion..."))
+                excel = win32com.client.Dispatch("Excel.Application")
+                
+                excel.Visible = False
+                excel.DisplayAlerts = False
+                excel.ScreenUpdating = False
+                excel.Interactive = False
+                excel.EnableEvents = False
+                
+                abs_path = os.path.abspath(file_path)
+                
+                workbook = excel.Workbooks.Open(
+                    abs_path,
+                    UpdateLinks=0,
+                    ReadOnly=False,
+                    Password='',
+                    IgnoreReadOnlyRecommended=True,
+                    Notify=False,
+                    AddToMru=False
+                )
+                
+                if workbook is None:
+                    result_queue.put(("error", "Failed to open workbook"))
+                    return
+                
+                result_queue.put(("status", "Injecting image insertion macro..."))
+                
+                try:
+                    vb_project = workbook.VBProject
+                except Exception as e:
+                    result_queue.put(("error", f"Cannot access VBA project: {str(e)}"))
+                    return
+                
+                for component in vb_project.VBComponents:
+                    if component.Name == "ImageModule":
+                        vb_project.VBComponents.Remove(component)
+                
+                module = vb_project.VBComponents.Add(1)
+                module.Name = "ImageModule"
+                module.CodeModule.AddFromString(VBA_IMAGE_INSERT_CODE)
+                
+                result_queue.put(("status", "Inserting images into Excel..."))
+                
+                excel.Run("ImageModule.InsertImagesFromPaths_Auto")
+                time.sleep(2)
+                
+                ws = workbook.ActiveSheet
+                result = ws.Range("Z2").Value
+                
+                if result and result.startswith("SUCCESS"):
+                    parts = result.split("|")
+                    ws.Range("Z2").Value = ""
+                    workbook.Save()
+                    result_queue.put(("success", f"Inserted {parts[1]} images, {parts[2]} missing"))
+                else:
+                    result_queue.put(("error", f"Image insertion failed: {result}"))
+                    
+            except Exception as e:
+                result_queue.put(("error", f"Error: {str(e)}"))
+                
+            finally:
+                if workbook:
+                    try:
+                        workbook.Close(SaveChanges=True)
+                    except:
+                        pass
+                if excel:
+                    try:
+                        excel.Quit()
+                    except:
+                        pass
+        finally:
+            pythoncom.CoUninitialize()
+
+    def run_threaded_operation(worker_func, file_path, progress_bar, status_text):
+        """Run Excel operation in thread"""
+        result_queue = Queue()
+        worker_thread = threading.Thread(target=worker_func, args=(file_path, result_queue))
+        worker_thread.start()
+        
+        while worker_thread.is_alive() or not result_queue.empty():
+            try:
+                msg = result_queue.get(timeout=0.1)
+                msg_type = msg[0]
+                
+                if msg_type == "status":
+                    status_text.text(msg[1])
+                elif msg_type == "progress":
+                    progress_bar.progress(msg[1])
+                elif msg_type == "success":
+                    if len(msg) > 2:
+                        return msg[1], True, msg[2]
+                    else:
+                        return None, True, msg[1]
+                elif msg_type == "error":
+                    return None, False, msg[1]
+            except:
+                continue
+        
+        worker_thread.join()
+        return None, False, "Unknown error"
 
 # ======================
 # STREAMLIT UI
@@ -824,26 +839,43 @@ def main():
     st.markdown("### Upload → Extract → Download Images → Process to Square → Insert in Excel")
     st.markdown("---")
     
+    # Platform warning
+    if not WINDOWS_SUPPORT:
+        st.warning("""
+        ⚠️ **Running in Limited Mode (Linux/Cloud)**
+        
+        Windows-specific features (VBA macros for URL extraction and image insertion) are not available.
+        
+        **Available Features:**
+        - ✅ Image download and processing to square format
+        - ✅ Data processing and Excel export
+        - ❌ Automated URL web scraping (VBA)
+        - ❌ Automated image insertion in Excel (VBA)
+        
+        **To use full features:** Run this app on Windows with Excel installed.
+        """)
+    
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Settings")
         st.markdown("---")
         
-        # VBA Setup Check
-        with st.expander("⚠️ VBA Setup Required", expanded=True):
-            st.markdown("""
-            **One-time Excel setup:**
-            1. Open Excel
-            2. File → Options → Trust Center
-            3. Trust Center Settings
-            4. Macro Settings
-            5. ✅ Enable: **"Trust access to VBA project object model"**
-            6. Click OK
+        if WINDOWS_SUPPORT:
+            # VBA Setup Check
+            with st.expander("⚠️ VBA Setup Required", expanded=True):
+                st.markdown("""
+                **One-time Excel setup:**
+                1. Open Excel
+                2. File → Options → Trust Center
+                3. Trust Center Settings
+                4. Macro Settings
+                5. ✅ Enable: **"Trust access to VBA project object model"**
+                6. Click OK
+                
+                Without this, macro injection will fail.
+                """)
             
-            Without this, macro injection will fail.
-            """)
-        
-        st.markdown("---")
+            st.markdown("---")
         
         enable_images = st.checkbox("📸 Download & Process Images", value=True, 
                                     help="Download images from Image_src column and convert to square format")
@@ -852,23 +884,29 @@ def main():
             st.caption("Images will be:")
             st.caption("• Downloaded from Image_src URLs")
             st.caption("• Converted to square format")
-            st.caption("• Inserted in final Excel")
+            if WINDOWS_SUPPORT:
+                st.caption("• Inserted in final Excel")
+            else:
+                st.caption("• Saved in output folder")
         
         st.markdown("---")
         
-        if st.button("🧹 Force Close Excel", help="Click if Excel is stuck"):
-            try:
-                subprocess.run(['taskkill', '/F', '/IM', 'EXCEL.EXE'], 
-                              capture_output=True, timeout=5)
-                st.success("✓ Excel processes cleaned")
-                time.sleep(1)
-                st.rerun()
-            except:
-                st.warning("No Excel processes found")
+        if WINDOWS_SUPPORT:
+            if st.button("🧹 Force Close Excel", help="Click if Excel is stuck"):
+                try:
+                    subprocess.run(['taskkill', '/F', '/IM', 'EXCEL.EXE'], 
+                                  capture_output=True, timeout=5)
+                    st.success("✓ Excel processes cleaned")
+                    time.sleep(1)
+                    st.rerun()
+                except:
+                    st.warning("No Excel processes found")
         
         st.markdown("---")
-        st.caption("Excel runs in background")
-        st.caption("No windows will open")
+        st.caption(f"Platform: {platform.system()}")
+        if WINDOWS_SUPPORT:
+            st.caption("Excel runs in background")
+            st.caption("No windows will open")
     
     # File upload
     uploaded_file = st.file_uploader(
@@ -901,25 +939,43 @@ def main():
                 st.error(f"Preview error: {e}")
         
         st.markdown("---")
-        st.info("ℹ️ Excel runs completely in background - no windows will open")
         
-        if st.button("🚀 Start Complete Processing", type="primary", use_container_width=True):
+        if WINDOWS_SUPPORT:
+            st.info("ℹ️ Excel runs completely in background - no windows will open")
+            button_label = "🚀 Start Complete Processing"
+        else:
+            st.info("ℹ️ Limited mode - image processing and Excel export only")
+            button_label = "🚀 Start Processing (Limited Mode)"
+        
+        if st.button(button_label, type="primary", use_container_width=True):
             
-            # STEP 1: Web extracting
-            st.markdown("### 📡 Step 1: Web extracting")
-            progress_bar1 = st.progress(0)
-            status_text1 = st.empty()
+            url_df = None
             
-            with st.spinner("Extracting URLs..."):
-                url_df, success, message = run_threaded_operation(
-                    excel_Extractr_worker, temp_path, progress_bar1, status_text1
-                )
-            
-            if not success:
-                st.error(f"❌ Extracting failed: {message}")
-                return
-            
-            st.success(f"✓ {message}")
+            # STEP 1: Web extracting (Windows only)
+            if WINDOWS_SUPPORT:
+                st.markdown("### 📡 Step 1: Web extracting")
+                progress_bar1 = st.progress(0)
+                status_text1 = st.empty()
+                
+                with st.spinner("Extracting URLs..."):
+                    url_df, success, message = run_threaded_operation(
+                        excel_Extractr_worker, temp_path, progress_bar1, status_text1
+                    )
+                
+                if not success:
+                    st.error(f"❌ Extracting failed: {message}")
+                    return
+                
+                st.success(f"✓ {message}")
+            else:
+                # Read directly from Excel in limited mode
+                st.markdown("### 📡 Step 1: Reading Excel Data")
+                try:
+                    url_df = pd.read_excel(temp_path)
+                    st.success(f"✓ Read {len(url_df)} rows from Excel")
+                except Exception as e:
+                    st.error(f"❌ Failed to read Excel: {e}")
+                    return
             
             # STEP 2: Download & Process Images (if enabled)
             image_paths = []
@@ -990,35 +1046,42 @@ def main():
                 url_df['Processed_Image_Path'] = image_paths
                 url_df['Image_src_to_path'] = url_df['Image_src'].map(image_src_to_path).fillna('')
             
-            # STEP 3: Process Data
-            st.markdown("### 🔄 Step 3: Processing Data")
-            progress_bar3 = st.progress(0)
-            status_text3 = st.empty()
-            
-            try:
-                map_df = pd.read_excel(temp_path, sheet_name="Mapping")
-                st.info(f"✓ Loaded {len(map_df)} field mappings")
+            # STEP 3: Process Data (only if extracted data exists)
+            results_df = None
+            if WINDOWS_SUPPORT and 'Extractd Data' in url_df.columns:
+                st.markdown("### 🔄 Step 3: Processing Data")
+                progress_bar3 = st.progress(0)
+                status_text3 = st.empty()
                 
-                with st.spinner("Processing Extractd data..."):
-                    results_df = process_Extractd_data(url_df, map_df, progress_bar3, status_text3)
-                
-                # Add image paths to results if enabled
-                if enable_images and 'Image_src_to_path' in url_df.columns:
-                    # Create mapping from Image_src to processed image path
-                    image_src_to_path = {}
-                    for idx, row in url_df.iterrows():
-                        img_src = row.get('Image_src', '')
-                        img_path = row.get('Processed_Image_Path', '')
-                        if img_src and img_path:
-                            image_src_to_path[img_src] = img_path
+                try:
+                    map_df = pd.read_excel(temp_path, sheet_name="Mapping")
+                    st.info(f"✓ Loaded {len(map_df)} field mappings")
                     
-                    # Map to results_df using Image_src column
-                    results_df['Image_Path'] = results_df['Image_src'].map(image_src_to_path).fillna('')
-                
-                st.success(f"✓ Processed {len(results_df)} valid records")
-                
-                # Statistics
-                st.markdown("### 📊 Processing Results")
+                    with st.spinner("Processing Extractd data..."):
+                        results_df = process_Extractd_data(url_df, map_df, progress_bar3, status_text3)
+                    
+                    # Add image paths to results if enabled
+                    if enable_images and 'Image_src_to_path' in url_df.columns:
+                        # Create mapping from Image_src to processed image path
+                        image_src_to_path = {}
+                        for idx, row in url_df.iterrows():
+                            img_src = row.get('Image_src', '')
+                            img_path = row.get('Processed_Image_Path', '')
+                            if img_src and img_path:
+                                image_src_to_path[img_src] = img_path
+                        
+                        # Map to results_df using Image_src column
+                        results_df['Image_Path'] = results_df['Image_src'].map(image_src_to_path).fillna('')
+                    
+                    st.success(f"✓ Processed {len(results_df)} valid records")
+                    
+                except Exception as e:
+                    st.warning(f"⚠️ Could not process extracted data: {e}")
+            
+            # Display statistics
+            st.markdown("### 📊 Processing Results")
+            
+            if results_df is not None and len(results_df) > 0:
                 col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
@@ -1037,90 +1100,118 @@ def main():
                 # Preview
                 with st.expander("👁️ Preview Processed Data", expanded=True):
                     st.dataframe(results_df.head(10), use_container_width=True)
-                
-                # STEP 4: Create Output Excel
-                st.markdown("### 💾 Step 4: Creating Output File")
-                
-                output_excel_path = os.path.join(temp_dir, f"OUTPUT_{uploaded_file.name}")
-                
-                with pd.ExcelWriter(output_excel_path, engine='openpyxl') as writer:
-                    results_df.to_excel(writer, index=False, sheet_name='Processed Data')
-                    url_df.to_excel(writer, index=False, sheet_name='Extractd Data')
-                    map_df.to_excel(writer, index=False, sheet_name='Mapping')
-                
-                st.success("✓ Excel file created")
-                
-                # STEP 5: Insert Images (if enabled)
-                if enable_images and (results_df.get('Image_Path', '') != '').any():
-                    st.markdown("### 🖼️ Step 5: Inserting Images in Excel")
-                    progress_bar5 = st.progress(0)
-                    status_text5 = st.empty()
-                    
-                    with st.spinner("Inserting images..."):
-                        _, success, message = run_threaded_operation(
-                            excel_image_insert_worker, output_excel_path, 
-                            progress_bar5, status_text5
-                        )
-                    
-                    if success:
-                        st.success(f"✓ {message}")
-                    else:
-                        st.warning(f"⚠️ {message}")
-                
-                # STEP 6: Download
-                st.markdown("### 📥 Step 6: Download Results")
-                
-                with open(output_excel_path, 'rb') as f:
-                    excel_bytes = f.read()
-                
-                output_filename = f"PROCESSED_{uploaded_file.name}"
-                st.download_button(
-                    label="📥 Download Complete Excel File",
-                    data=excel_bytes,
-                    file_name=output_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary",
-                    use_container_width=True
-                )
-                
-                st.success("🎉 Complete! Download your processed file above.")
-                
-            except Exception as e:
-                st.error(f"❌ Processing error: {str(e)}")
-                st.exception(e)
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Total Rows", len(url_df))
+                with col2:
+                    if enable_images:
+                        st.metric("Images Processed", success_count)
             
-            finally:
-                # Cleanup
+            # STEP 4: Create Output Excel
+            st.markdown("### 💾 Step 4: Creating Output File")
+            
+            output_excel_path = os.path.join(temp_dir, f"OUTPUT_{uploaded_file.name}")
+            
+            with pd.ExcelWriter(output_excel_path, engine='openpyxl') as writer:
+                if results_df is not None and len(results_df) > 0:
+                    results_df.to_excel(writer, index=False, sheet_name='Processed Data')
+                url_df.to_excel(writer, index=False, sheet_name='Raw Data')
                 try:
-                    import shutil
-                    shutil.rmtree(temp_dir)
+                    map_df = pd.read_excel(temp_path, sheet_name="Mapping")
+                    map_df.to_excel(writer, index=False, sheet_name='Mapping')
                 except:
                     pass
+            
+            st.success("✓ Excel file created")
+            
+            # STEP 5: Insert Images (Windows only)
+            if WINDOWS_SUPPORT and enable_images and (url_df.get('Processed_Image_Path', '') != '').any():
+                st.markdown("### 🖼️ Step 5: Inserting Images in Excel")
+                progress_bar5 = st.progress(0)
+                status_text5 = st.empty()
+                
+                with st.spinner("Inserting images..."):
+                    _, success, message = run_threaded_operation(
+                        excel_image_insert_worker, output_excel_path, 
+                        progress_bar5, status_text5
+                    )
+                
+                if success:
+                    st.success(f"✓ {message}")
+                else:
+                    st.warning(f"⚠️ {message}")
+            
+            # STEP 6: Download
+            st.markdown("### 📥 Step 6: Download Results")
+            
+            with open(output_excel_path, 'rb') as f:
+                excel_bytes = f.read()
+            
+            output_filename = f"PROCESSED_{uploaded_file.name}"
+            st.download_button(
+                label="📥 Download Complete Excel File",
+                data=excel_bytes,
+                file_name=output_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True
+            )
+            
+            st.success("🎉 Complete! Download your processed file above.")
+            
+            # Cleanup
+            try:
+                import shutil
+                shutil.rmtree(temp_dir)
+            except:
+                pass
     
     else:
         st.info("👆 Please upload an Excel file to get started")
         
         with st.expander("ℹ️ How to use this tool", expanded=True):
-            st.markdown("""
-            **Excel File Requirements:**
-            1. **Column A**: URLs to Extract
-            2. **Column B**: Image_src URLs (for image download)
-            3. **Sheet "Mapping"**: Field mappings (Online → Main)
-            
-            **Processing Steps:**
-            1. ✅ Upload Excel file
-            2. 🌐 Extract data from URLs
-            3. 📸 Download & process images to square format (optional)
-            4. 🔄 Extract structured data
-            5. 🖼️ Insert images in Excel
-            6. 📥 Download complete file
-            
-            **Output Includes:**
-            - Processed data with all extracted fields
-            - Original URL and Image_src columns
-            - Square-formatted product images inserted in Excel
-            - Raw Extractd data for reference
-            """)
+            if WINDOWS_SUPPORT:
+                st.markdown("""
+                **Excel File Requirements:**
+                1. **Column A**: URLs to Extract
+                2. **Column B**: Image_src URLs (for image download)
+                3. **Sheet "Mapping"**: Field mappings (Online → Main)
+                
+                **Processing Steps:**
+                1. ✅ Upload Excel file
+                2. 🌐 Extract data from URLs
+                3. 📸 Download & process images to square format (optional)
+                4. 🔄 Extract structured data
+                5. 🖼️ Insert images in Excel
+                6. 📥 Download complete file
+                
+                **Output Includes:**
+                - Processed data with all extracted fields
+                - Original URL and Image_src columns
+                - Square-formatted product images inserted in Excel
+                - Raw Extractd data for reference
+                """)
+            else:
+                st.markdown("""
+                **Limited Mode (Linux/Cloud)**
+                
+                **Excel File Requirements:**
+                1. **Column B**: Image_src URLs (for image download)
+                2. Any other data columns you want to preserve
+                
+                **Processing Steps:**
+                1. ✅ Upload Excel file
+                2. 📸 Download & process images to square format
+                3. 📥 Download Excel with processed data
+                
+                **Output Includes:**
+                - Original data
+                - Image paths for downloaded images
+                - Square-formatted product images (in separate folder)
+                
+                **Note:** URL web scraping and automated image insertion require Windows with Excel.
+                """)
 
 if __name__ == "__main__":
     main()
